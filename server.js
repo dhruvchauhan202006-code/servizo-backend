@@ -326,6 +326,76 @@ app.post('/api/notify-worker', async (req, res) => {
   }
 });
 
+/**
+ * 4. BROADCAST CATCHY PROMOTIONAL NOTIFICATIONS (SUPERADMIN)
+ * Endpoint: POST /api/broadcast-notification
+ * Request Body: { title, body, audience }
+ */
+app.post('/api/broadcast-notification', async (req, res) => {
+  try {
+    const { title, body, audience = 'all' } = req.body;
+    if (!title || !body) {
+      return res.status(400).json({ error: 'Title and body are required' });
+    }
+
+    if (!firebaseInitStatus.initialized || firebaseInitStatus.mode !== 'service_account') {
+      return res.status(503).json({
+        error: 'Firebase Admin is not authenticated with a valid Service Account key yet.',
+        details: firebaseInitStatus.error
+      });
+    }
+
+    const topics = audience === 'workers' ? ['workers'] :
+                   audience === 'customers' ? ['customers'] : ['customers', 'workers'];
+
+    const sendPromises = topics.map(topic => {
+      const message = {
+        topic: topic,
+        notification: {
+          title: title,
+          body: body
+        },
+        data: {
+          audience: audience,
+          timestamp: Date.now().toString()
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'servizo_urgent_channel',
+            sound: 'default'
+          }
+        }
+      };
+      return admin.messaging().send(message);
+    });
+
+    const results = await Promise.all(sendPromises);
+
+    // Save as active announcement in Firestore for in-app feed
+    try {
+      const db = admin.firestore();
+      const annId = 'ann_' + Date.now();
+      await db.collection('announcements').doc(annId).set({
+        id: annId,
+        title: title,
+        message: body,
+        actionText: 'Book Now',
+        isUrgent: true,
+        active: true,
+        createdAt: Date.now()
+      });
+    } catch (e) {
+      console.warn('Could not save broadcast to announcements collection:', e.message);
+    }
+
+    return res.status(200).json({ success: true, messageIds: results });
+  } catch (error) {
+    console.error('Error broadcasting notification:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`Servizo Free-Tier Backend listening on port ${PORT}`);
